@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import TrackingMap from './TrackingMap';
-import AmbulanceArt from '../../components/AmbulanceArt';
+import SearchingScreen from './SearchingScreen';
 import { useBooking } from '../../context/BookingContext';
 import { useDriverLocationAge, getCrewLocation } from '../../hooks/useGpsPublisher';
 import { hospitals } from '../../mock/hospitals';
@@ -9,6 +9,8 @@ import { fetchRoute } from '../../utils/route';
 import './Tracking.scss';
 import TripProgress from '../../components/TripProgress';
 const STEPS = 30; // each route is walked in 30 steps, one every 2 seconds
+// Demo drive time for each leg (station → patient, patient → hospital). Change to make it slower/faster.
+const DRIVE_MS = STEPS * 2000; // 60 seconds
 const FALLBACK_MINUTES = 8;
 
 const TITLES = {
@@ -36,9 +38,20 @@ export default function Tracking() {
   const patient = spot ? [spot.lat, spot.lng] : null;
   const hospitalPos = hospital ? [hospital.lat, hospital.lng] : null;
 
-  const [step, setStep] = useState('confirmed'); // 'confirmed' or 'map'
-  const [pickupIdx, setPickupIdx] = useState(0); // progress: station -> patient
-  const [tripIdx, setTripIdx] = useState(0); // progress: patient -> hospital
+  const [step, setStep] = useState(unit ? 'map' : 'confirmed'); // 'confirmed' or 'map'
+  // When each drive started (fallback if the booking has no timestamp)
+  const driveStart = useRef({ accepted: Date.now(), picked: Date.now() });
+  const [now, setNow] = useState(() => Date.now()); // ticks every second for the ETA text
+
+  // A driver accepted: show the green tick for a moment, then open the live map
+  const [found, setFound] = useState(false);
+  useEffect(() => {
+    if (!unit || step === 'map') return;
+    setFound(true);
+    if (navigator.vibrate) navigator.vibrate([60, 60, 120]);
+    const t = setTimeout(() => setStep('map'), 1600);
+    return () => clearTimeout(t);
+  }, [unit, step]);
 
   // Until the real roads load, each route is a straight line
   const [toPatient, setToPatient] = useState({
@@ -81,19 +94,12 @@ export default function Tracking() {
     };
   }, [pLat, pLng, hLat, hLng]);
 
-  // The ambulance moves along route 1 after the driver accepts
+  // The ambulance glides along the road (TrackingMap animates it); this tick only updates the ETA text
   useEffect(() => {
-    if (step !== 'map' || status !== 'accepted') return;
-    const timer = setInterval(() => setPickupIdx((i) => (i < STEPS ? i + 1 : i)), 2000);
+    if (step !== 'map') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [step, status]);
-
-  // ...and along route 2 after the patient is picked up
-  useEffect(() => {
-    if (step !== 'map' || status !== 'picked') return;
-    const timer = setInterval(() => setTripIdx((i) => (i < STEPS ? i + 1 : i)), 2000);
-    return () => clearInterval(timer);
-  }, [step, status]);
+  }, [step]);
 
   // No booking (cancelled, finished or old data): go back home
   if (!booking || !patient) return <Navigate to="/" replace />;
@@ -105,16 +111,18 @@ export default function Tracking() {
     current.points.length > 1
       ? current
       : { ...current, points: onTrip ? [patient, hospitalPos] : [start, patient] };
-  const progress = onTrip
-    ? (status === 'hospital' ? STEPS : tripIdx) / STEPS
-    : (status === 'reached' ? STEPS : pickupIdx) / STEPS;
+  const legStart = onTrip
+    ? booking.pickedAt || driveStart.current.picked
+    : booking.acceptedAt || driveStart.current.accepted;
+  const legDone = status === 'reached' || status === 'hospital';
+  const progress = legDone ? 1 : Math.max(0, Math.min(1, (now - legStart) / DRIVE_MS));
   const minutesLeft = Math.max(1, Math.ceil(route.minutes * (1 - progress)));
 
   const etaText = {
     requested: 'Searching',
-    accepted: `${minutesLeft} min away`,
+    accepted: progress >= 0.98 ? 'Arriving now' : `${minutesLeft} min away`,
     reached: 'Now',
-    picked: `${minutesLeft} min to hospital`,
+    picked: progress >= 0.98 ? 'Arriving at hospital' : `${minutesLeft} min to hospital`,
     hospital: 'Done',
   }[status];
 
@@ -176,39 +184,10 @@ export default function Tracking() {
     completeBooking();
     navigate('/');
   };
-   // No driver yet? Stay on this screen and show no driver details.
-  if (step === 'confirmed' || !unit) {
-    return (
-      <div className="confirmed">
-        <button className="confirmed__back" onClick={handleCancel}>
-          <i className="bi bi-chevron-left" />
-        </button>
-
-        <div className="confirmed__art">
-        <AmbulanceArt />
-        </div>
-
-        <div className="confirmed__text">
-                   <h1>
-            {unit ? 'Ambulance and responders are on a way' : 'Looking for the nearest ambulance'}
-          </h1>
-          <p>
-            {unit
-              ? 'Stay calm and speak gently to the patient until help arrives. The nearest ambulance has been alerted.'
-              : 'Your request has been sent to all ambulances on duty. Stay calm and speak gently to the patient. Driver details will appear here as soon as a driver accepts.'}
-          </p>
-        </div>
-
-        <div className="confirmed__actions">
-                   <button className="confirmed__primary" disabled={!unit} onClick={() => setStep('map')}>
-            {unit ? 'See responders on map' : 'Waiting for a driver…'}
-          </button>
-          <button className="confirmed__link" onClick={handleCancel}>
-            Cancel request
-          </button>
-        </div>
-      </div>
-    );
+   // While waiting for a driver, show the searching screen.
+  // As soon as a driver accepts (unit is assigned), automatically show the live map.
+  if (step !== 'map') {
+    return <SearchingScreen booking={booking} found={found} unit={unit} onCancel={handleCancel} />;
   }
 
   // ---------- Stage 2: live map ----------
@@ -216,12 +195,14 @@ export default function Tracking() {
     <div className="track">
       <TrackingMap
         path={route.points}
-        progress={progress}
+        startAt={legStart}
+        durationMs={DRIVE_MS}
+        done={legDone}
         patient={patient}
         hospital={hospitalChosen && hospital ? { name: hospital.name, position: hospitalPos } : null}
       />
 
-      <button className="track__back" onClick={() => setStep('confirmed')}>
+      <button className="track__back" onClick={() => navigate('/')}>
         <i className="bi bi-chevron-left" />
       </button>
 
@@ -230,7 +211,7 @@ export default function Tracking() {
           <h3>{TITLES[status]}</h3>
           <span className="track__eta">{etaText}</span>
         </div>
-        <TripProgress status={status} />
+        <div className="track__progress"><TripProgress status={status} /></div>
         <p className="track__notified">
           <i className="bi bi-bell-fill" />{' '}
           {booking.notified?.length
@@ -249,11 +230,11 @@ export default function Tracking() {
 
         <div className="track__driver">
           <div className="track__avatar">{unit.driver.charAt(0)}</div>
-          <div>
+          <div className="track__driver-info">
             <h4>{unit.driver}</h4>
-            <p>Ambulance {unit.number}</p>
-            <p>From {unit.station}</p>
+            <p>{unit.station}</p>
           </div>
+          <span className="track__plate">{unit.number}</span>
         </div>
 
         {hospitalChosen && (
@@ -275,7 +256,8 @@ export default function Tracking() {
           className="track__aid"
           onClick={() => navigate('/first-aid', { state: { id: booking.type } })}
         >
-          <i className="bi bi-heart-pulse-fill" /> First aid tips while you wait
+          <i className="bi bi-heart-pulse-fill" /> <span>First aid tips while you wait</span>
+          <i className="bi bi-chevron-right" />
         </button>
 
         <button

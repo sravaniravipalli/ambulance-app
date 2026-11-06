@@ -1,83 +1,244 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { APP_NAME, DEMO_OTP } from '../../mock/app';
+import { DEMO_OTP } from '../../mock/app';
+import ProtocolLeaders from '../../components/ProtocolLeaders';
+import BrandLogo from '../../components/BrandLogo';
 import './SignIn.scss';
+
+const SLIDES = [
+  { icon: 'bi-lightning-charge-fill', title: 'One tap SOS', desc: 'Book the nearest ambulance in seconds – no forms, no waiting.' },
+  { icon: 'bi-geo-alt-fill', title: 'Live GPS tracking', desc: 'Watch the ambulance come to you on the map, minute by minute.' },
+  { icon: 'bi-hospital-fill', title: 'Hospital ready on arrival', desc: 'The emergency team is alerted before the patient reaches.' },
+];
+
+const RESEND_SECONDS = 30;
 
 export default function SignIn() {
   const { login } = useAuth();
-  const [step, setStep] = useState('phone'); // 'phone' or 'otp'
+  const [step, setStep] = useState('welcome'); // 'welcome' | 'phone' | 'otp'
+  const [slide, setSlide] = useState(0);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [error, setError] = useState('');
+  const [resendIn, setResendIn] = useState(RESEND_SECONDS);
+  const otpRef = useRef(null);
 
-  const sendCode = () => {
-    const digits = phone.replace(/\D/g, '');
-    if (!name.trim()) return setError('Please enter your name.');
-    if (digits.length !== 10) return setError('Enter a 10-digit mobile number.');
+  // Feature slides change on their own on the welcome step
+  useEffect(() => {
+    if (step !== 'welcome') return;
+    const t = setInterval(() => setSlide((s) => (s + 1) % SLIDES.length), 3500);
+    return () => clearInterval(t);
+  }, [step]);
+
+  // "Resend code" countdown on the OTP step
+  useEffect(() => {
+    if (step !== 'otp' || resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [step, resendIn]);
+
+  const go = (next) => {
     setError('');
-    setStep('otp');
+    setStep(next);
   };
 
-  const verify = () => {
-    if (otp !== DEMO_OTP) return setError('Wrong code. Please try again.');
+  const sendCode = (e) => {
+    e?.preventDefault();
+    const digits = phone.replace(/\D/g, '');
+    if (!name.trim()) return setError('Please enter your full name.');
+    if (digits.length !== 10) return setError('Enter a valid 10-digit mobile number.');
+    setOtp('');
+    setResendIn(RESEND_SECONDS);
+    go('otp');
+  };
+
+  const verify = (e) => {
+    e?.preventDefault();
+    if (otp.length !== 6) return setError('Enter the 6-digit code.');
+    if (otp !== DEMO_OTP) return setError(`Invalid code. Try demo code ${DEMO_OTP}.`);
+    navigator.vibrate?.(20);
     login(name.trim(), phone.replace(/\D/g, ''));
   };
 
   return (
     <div className="signin">
-      <div className="signin__top">
-        <div className="signin__logo"><i className="bi bi-truck-front-fill" /></div>
-        <h1>{APP_NAME}</h1>
-        <p>Book an ambulance in seconds.</p>
+      {/* Official header */}
+      <div className="signin__protocol">
+        <ProtocolLeaders variant="ribbon" size="lg" />
       </div>
 
-      <div className="signin__card">
+      {/* Brand */}
+      <div className={`signin__brand ${step !== 'welcome' ? 'signin__brand--compact' : ''}`}>
+        <div className="signin__emblem">
+          <BrandLogo size={step === 'welcome' ? 84 : 52} showText={false} />
+        </div>
+        <div className="signin__brand-text">
+          <h1><b>108</b> Ambulance</h1>
+          <p>Emergency Response Service</p>
+        </div>
+      </div>
+
+      {/* Bottom card */}
+      <section className="signin__card" key={step}>
+        {step === 'welcome' && (
+          <div className="signin__content">
+            <div className="signin__slides" aria-live="polite">
+              <div className="signin__slide" key={slide}>
+                <span className="signin__slide-icon">
+                  <i className={`bi ${SLIDES[slide].icon}`} />
+                </span>
+                <div>
+                  <h2>{SLIDES[slide].title}</h2>
+                  <p>{SLIDES[slide].desc}</p>
+                </div>
+              </div>
+              <div className="signin__dots" role="tablist" aria-label="Features">
+                {SLIDES.map((s, i) => (
+                  <button
+                    key={s.title}
+                    type="button"
+                    role="tab"
+                    aria-selected={i === slide}
+                    aria-label={s.title}
+                    className={`signin__dot ${i === slide ? 'is-active' : ''}`}
+                    onClick={() => setSlide(i)}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <button type="button" className="signin__primary" onClick={() => go('phone')}>
+              Continue with mobile number <i className="bi bi-arrow-right" />
+            </button>
+
+            <ul className="signin__trust">
+              <li><i className="bi bi-shield-check" /> Official</li>
+              <li><i className="bi bi-currency-rupee" /> Free service</li>
+              <li><i className="bi bi-clock-history" /> 24 × 7</li>
+            </ul>
+          </div>
+        )}
+
         {step === 'phone' && (
-          <>
-            <h2>Sign in</h2>
+          <form className="signin__content" onSubmit={sendCode} noValidate>
+            <div className="signin__title-row">
+              <button type="button" className="signin__back" onClick={() => go('welcome')} aria-label="Back">
+                <i className="bi bi-arrow-left" />
+              </button>
+              <div>
+                <h2>Sign in</h2>
+                <p>Your name and mobile number help the crew reach you.</p>
+              </div>
+            </div>
 
-            <label>Your name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
+            <label className="signin__field">
+              <span>Full name</span>
+              <span className="signin__input">
+                <i className="bi bi-person" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Suresh Kumar"
+                  autoComplete="name"
+                  autoFocus
+                />
+              </span>
+            </label>
 
-            <label>Mobile number</label>
-            <input
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="10-digit number"
-              inputMode="numeric"
-              maxLength={10}
-            />
+            <label className="signin__field">
+              <span>Mobile number</span>
+              <span className="signin__input">
+                <span className="signin__prefix">+91</span>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="10-digit number"
+                  inputMode="numeric"
+                  autoComplete="tel"
+                />
+              </span>
+            </label>
 
-            {error && <p className="signin__error">{error}</p>}
-            <button className="signin__btn" onClick={sendCode}>Send code</button>
-          </>
+            {error && (
+              <div className="signin__error" role="alert">
+                <i className="bi bi-exclamation-circle-fill" /> {error}
+              </div>
+            )}
+
+            <button type="submit" className="signin__primary">
+              Send OTP
+            </button>
+            <p className="signin__fine">We'll send a 6-digit code by SMS to verify your number.</p>
+          </form>
         )}
 
         {step === 'otp' && (
-          <>
-            <h2>Enter the code</h2>
-            <p className="signin__hint">We sent a 6-digit code to +91 {phone}.</p>
+          <form className="signin__content" onSubmit={verify} noValidate>
+            <div className="signin__title-row">
+              <button type="button" className="signin__back" onClick={() => go('phone')} aria-label="Change phone number">
+                <i className="bi bi-arrow-left" />
+              </button>
+              <div>
+                <h2>Verify your number</h2>
+                <p>
+                  Code sent to <b>+91 {phone.slice(0, 5)} {phone.slice(5)}</b>
+                </p>
+              </div>
+            </div>
 
-            <input
-              className="signin__otp"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-              placeholder="······"
-              inputMode="numeric"
-              maxLength={6}
-            />
+            {/* 6 boxes drawn over one real input (works with SMS auto-fill) */}
+            <div className="signin__otp" onClick={() => otpRef.current?.focus()}>
+              <input
+                ref={otpRef}
+                className="signin__otp-input"
+                type="text"
+                value={otp}
+                onChange={(e) => {
+                  setError('');
+                  setOtp(e.target.value.replace(/\D/g, '').slice(0, 6));
+                }}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                aria-label="6-digit code"
+                autoFocus
+              />
+              {Array.from({ length: 6 }).map((_, i) => (
+                <span key={i} className={`signin__otp-box ${i === otp.length ? 'is-current' : ''} ${otp[i] ? 'is-filled' : ''}`}>
+                  {otp[i] || ''}
+                </span>
+              ))}
+            </div>
 
-            <p className="signin__demo">Demo mode: your code is <strong>{DEMO_OTP}</strong></p>
+            <div className="signin__otp-meta">
+              <span className="signin__demo">
+                <i className="bi bi-key-fill" /> Demo code <b>{DEMO_OTP}</b>
+              </span>
+              {resendIn > 0 ? (
+                <span className="signin__resend">Resend in 0:{String(resendIn).padStart(2, '0')}</span>
+              ) : (
+                <button type="button" className="signin__resend signin__resend--btn" onClick={() => setResendIn(RESEND_SECONDS)}>
+                  Resend code
+                </button>
+              )}
+            </div>
 
-            {error && <p className="signin__error">{error}</p>}
-            <button className="signin__btn" onClick={verify}>Verify and continue</button>
-            <button className="signin__link" onClick={() => { setStep('phone'); setOtp(''); setError(''); }}>
-              Change number
+            {error && (
+              <div className="signin__error" role="alert">
+                <i className="bi bi-exclamation-circle-fill" /> {error}
+              </div>
+            )}
+
+            <button type="submit" className="signin__primary" disabled={otp.length !== 6}>
+              Verify &amp; continue
             </button>
-          </>
+          </form>
         )}
-      </div>
+
+        <p className="signin__footer">Department of Health, Medical &amp; Family Welfare · Govt. of Andhra Pradesh</p>
+      </section>
     </div>
   );
 }
